@@ -1,0 +1,17 @@
+[tool.poetry]
+name = "dl-confluence"
+version = "0.1.0"
+description = ""
+authors = ["shvec <a-s-w@yandex.ru>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+requests = "^2.31.0"
+atlassian-python-api = "^3.41.11"
+argparse = "^1.4.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
