@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import sys
@@ -166,27 +167,37 @@ def main():
     else:
         cf = Confluence(url=SETTINGS.CONFLUENCE_URL, username=SETTINGS.CONFLUENCE_USERNAME, password=SETTINGS.CONFLUENCE_PASSWORD)
 
-    if not pathlib.Path(SETTINGS.TARGET_DIRECTORY).exists():
-        pathlib.Path(SETTINGS.TARGET_DIRECTORY).mkdir(parents=True, exist_ok=True)
+    current_path = SETTINGS.TARGET_DIRECTORY
+    if not pathlib.Path(current_path).exists():
+        pathlib.Path(current_path).mkdir(parents=True, exist_ok=True)
         logger.info(f"Создаём локальное хранилище: {SETTINGS.TARGET_DIRECTORY}")
 
     if SETTINGS.CONFLUENCE_SPACES is not None:
-        for el in SETTINGS.CONFLUENCE_SPACES:
-            space = el.get("space", "")
-            title = el.get("title", "")
-            if all(param for param in [space, title]):
-                space_page_id = cf.get_page_id(space=space, title=title)
-                if space_page_id is not None and space_page_id != '':
-                    dl_all(cf, space_page_id, SETTINGS.TARGET_DIRECTORY, skip_existing=True)
+        for space_key in SETTINGS.CONFLUENCE_SPACES:
+            if space_key:
+                space = cf.get_space(space_key=space_key)
+
+                # Проверяем наличие SPACE файла
+                space_file_path = os.path.join(current_path, f'{clean_folder_name(space_key)}.json')
+                if not os.path.exists(space_file_path):
+                    logging.info(f"Скачиваем STORAGE файл: {space_file_path}")
+                    with open(space_file_path, 'w') as file:
+                        json.dump(space, file)
                 else:
-                    logger.error(f'По указанным параметрам ({space=}, {title=}) поиск стартовой страницы не удался!')
+                    logging.info(f"STORAGE файл уже существует: {space_file_path}")
+
+                space_page_id = space.get("homepage", []).get("id", [])
+                if space_page_id:
+                    dl_all(cf, space_page_id, current_path, skip_existing=True)
+                else:
+                    logger.error(f'По указанным параметрам ({space_key=}) поиск стартовой страницы не удался!')
             else:
-                logger.error(f'Переданные параметры не валидны! {space=} {title=}')
+                logger.error(f'Переданные параметры не валидны! {space_key=}')
 
     if SETTINGS.CONFLUENCE_PAGE_IDS is not None:
         for page_id in SETTINGS.CONFLUENCE_PAGE_IDS:
             if page_id is not None and page_id != '':
-                dl_all(cf, page_id, SETTINGS.TARGET_DIRECTORY, skip_existing=True)
+                dl_all(cf, page_id, current_path, skip_existing=True)
             else:
                 logger.error(f'Переданные параметры не валидны! {page_id=}')
 
