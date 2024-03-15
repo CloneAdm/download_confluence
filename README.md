@@ -17,3 +17,5 @@ https://some_site/display/[space]/[title]
 - передать в виде аргументов ```python main.py --help```
 
 запуск: ```python main.py```
+
+API: https://docs.atlassian.com/ConfluenceServer/rest/7.20.0/

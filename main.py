@@ -5,6 +5,8 @@ import logging
 import unicodedata
 import pathlib
 from atlassian import Confluence
+from atlassian.errors import ApiNotFoundError
+import requests
 import SETTINGS
 from SETTINGS import logger
 
@@ -65,6 +67,32 @@ def download_attachments_from_page(cf_conn, page_id, path):
         return len(attachments)
 
 
+def get_src_page(cf_conn, page_id):
+    headers = cf_conn.form_token_headers
+    url = f"plugins/viewsource/viewpagesrc.action?pageId={page_id}"
+    if cf_conn.api_version == "cloud":
+        url = cf_conn.get_pdf_download_url_for_confluence_cloud(url)
+        if not url:
+            logger.error("Failed to get download SRC url.")
+            raise ApiNotFoundError("Failed to export page as SRC", reason="Failed to get download SRC url.")
+        # To download the SRC file, the request should be with no headers of authentications.
+        return requests.get(url, timeout=75).content
+    return cf_conn.get(url, headers=headers, not_json_response=True)
+
+
+def get_storage_page(cf_conn, page_id):
+    headers = cf_conn.form_token_headers
+    url = f"plugins/viewstorage/viewpagestorage.action?pageId={page_id}"
+    if cf_conn.api_version == "cloud":
+        url = cf_conn.get_pdf_download_url_for_confluence_cloud(url)
+        if not url:
+            logger.error("Failed to get download STORAGE url.")
+            raise ApiNotFoundError("Failed to export page as SRC", reason="Failed to get download STORAGE url.")
+        # To download the STORAGE file, the request should be with no headers of authentications.
+        return requests.get(url, timeout=75).content
+    return cf_conn.get(url, headers=headers, not_json_response=True)
+
+
 # Функция для получения иерархии страниц и создания файлов
 def dl_all(cf_conn, page_id, current_directory, skip_existing=False):
     page_title = ""
@@ -82,8 +110,8 @@ def dl_all(cf_conn, page_id, current_directory, skip_existing=False):
         json_file_path = os.path.join(current_path, 'page_info.json')
         if not os.path.exists(json_file_path) or not skip_existing:
             logging.info(f"Создаём JSON файл: {json_file_path}")
-            with open(json_file_path, 'w', encoding='utf-8') as json_file:
-                json_file.write(str(page_info))
+            with open(json_file_path, 'w', encoding='utf-8') as file:
+                file.write(str(page_info))
         else:
             logging.info(f"JSON файл уже существует: {json_file_path}")
 
@@ -91,10 +119,28 @@ def dl_all(cf_conn, page_id, current_directory, skip_existing=False):
         pdf_file_path = os.path.join(current_path, f'{folder_name}.pdf')
         if not os.path.exists(pdf_file_path) or not skip_existing:
             logging.info(f"Скачиваем PDF файл: {pdf_file_path}")
-            with open(pdf_file_path, 'wb') as pdf_file:
-                pdf_file.write(cf_conn.get_page_as_pdf(page_id))
+            with open(pdf_file_path, 'wb') as file:
+                file.write(cf_conn.get_page_as_pdf(page_id))
         else:
             logging.info(f"PDF файл уже существует: {pdf_file_path}")
+
+        # Проверяем наличие SRC файла
+        src_file_path = os.path.join(current_path, f'{folder_name}.src')
+        if not os.path.exists(src_file_path) or not skip_existing:
+            logging.info(f"Скачиваем SRC файл: {src_file_path}")
+            with open(src_file_path, 'wb') as file:
+                file.write(get_src_page(cf_conn, page_id))
+        else:
+            logging.info(f"SRC файл уже существует: {src_file_path}")
+
+        # Проверяем наличие STORAGE файла
+        storage_file_path = os.path.join(current_path, f'{folder_name}.storage')
+        if not os.path.exists(storage_file_path) or not skip_existing:
+            logging.info(f"Скачиваем STORAGE файл: {storage_file_path}")
+            with open(storage_file_path, 'wb') as file:
+                file.write(get_storage_page(cf_conn, page_id))
+        else:
+            logging.info(f"STORAGE файл уже существует: {storage_file_path}")
 
         # Скачиваем прикрепленные файлы
         attachments = download_attachments_from_page(cf_conn, page_id, path=current_path)
