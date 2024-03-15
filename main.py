@@ -5,22 +5,30 @@ import sys
 import logging
 import unicodedata
 import pathlib
+from urllib.parse import unquote
 from atlassian import Confluence
-from atlassian.errors import ApiNotFoundError
+from atlassian.errors import ApiNotFoundError, ApiError
 import requests
+from requests.exceptions import HTTPError
 import SETTINGS
 from SETTINGS import logger
 
 
-def clean_folder_name(folder_name):
-    # Удаление Unicode символов из имени папки
-    cleaned_name = ''.join(c for c in folder_name if unicodedata.category(c)[0] != 'C')
+def clean_folder_name(folder_name:str) -> str:
 
-    all_quotes = r"~'\"“”‘’«»„‚⹂〝〞〟＂＇＜＞［］｢｣'"
-    all_hyphens = r"‐‑‒–—―⁃−—➖—"
+    # ограничиваем длину строки:
+    cleaned_name = folder_name[:200]
+
+    # Удаление Unicode символов из имени папки
+    cleaned_name = ''.join(c for c in cleaned_name if unicodedata.category(c)[0] != 'C')
+
+    all_quotes = r'"~“”‘’«»„‚⹂〝〞〟＂＇＜＞［］｢｣'
     cleaned_name = re.sub("[" + re.escape(all_quotes) + "]", "'", cleaned_name)
+
+    all_hyphens = r':/\‐‑‒–—―⁃−—➖—'
     cleaned_name = re.sub("[" + re.escape(all_hyphens) + "]", "-", cleaned_name)
-    cleaned_name = cleaned_name.rstrip(' .,-')  # удалим символы в конце строки (любое количество)
+
+    cleaned_name = cleaned_name.rstrip(' .,-')  # удалим эти символы в конце строки (любое количество)
 
     # Запрещенные символы в именах папок на разных ОС
     if sys.platform.startswith('linux') or sys.platform.startswith('darwin'):
@@ -55,14 +63,17 @@ def download_attachments_from_page(cf_conn, page_id, path):
                 download_link = cf_conn.url + attachment["_links"]["download"]
                 r = cf_conn._session.get(f"{download_link}")
                 file_path = os.path.join(attachments_path, clean_folder_name(file_name))
-                with open(file_path, "wb") as f:
-                    f.write(r.content)
+                attachment["local_file"] = file_path
+                with open(file_path, "wb") as file:
+                    file.write(r.content)
+            file_path = os.path.join(path, "attachments.json")
+            with open(file_path, "w") as file:
+                file.write(str(attachments))
+
         except NotADirectoryError:
             raise NotADirectoryError("Verify if directory path is correct and/or if directory exists")
         except PermissionError:
-            raise PermissionError(
-                "Directory found, but there is a problem with saving file to this directory. Check directory permissions"
-            )
+            raise PermissionError("Directory found, but there is a problem with saving file to this directory. Check directory permissions")
         except Exception as e:
             raise e
         return len(attachments)
@@ -77,8 +88,11 @@ def get_src_page(cf_conn, page_id):
             logger.error("Failed to get download SRC url.")
             raise ApiNotFoundError("Failed to export page as SRC", reason="Failed to get download SRC url.")
         # To download the SRC file, the request should be with no headers of authentications.
-        return requests.get(url, timeout=75).content
-    return cf_conn.get(url, headers=headers, not_json_response=True)
+        content = requests.get(url, timeout=75).content
+    else:
+        content = cf_conn.get(url, headers=headers, not_json_response=True)
+
+    return content
 
 
 def get_storage_page(cf_conn, page_id):
@@ -116,6 +130,13 @@ def dl_all(cf_conn, page_id, current_directory, skip_existing=False):
         else:
             logging.info(f"JSON файл уже существует: {json_file_path}")
 
+        # Скачиваем прикрепленные файлы
+        attachments = download_attachments_from_page(cf_conn, page_id, path=current_path)
+        if attachments is not None:
+            logging.info(f"Скачали прикреплённые файлы: {attachments} шт.")
+
+        logging.info(f"Страница успешно обработана: {page_id=} {page_title=}")
+
         # Проверяем наличие PDF файла
         pdf_file_path = os.path.join(current_path, f'{folder_name}.pdf')
         if not os.path.exists(pdf_file_path) or not skip_existing:
@@ -124,13 +145,14 @@ def dl_all(cf_conn, page_id, current_directory, skip_existing=False):
                 file.write(cf_conn.get_page_as_pdf(page_id))
         else:
             logging.info(f"PDF файл уже существует: {pdf_file_path}")
-
         # Проверяем наличие SRC файла
-        src_file_path = os.path.join(current_path, f'{folder_name}.src')
+        src_file_path = os.path.join(current_path, f'{folder_name}_src.html')
         if not os.path.exists(src_file_path) or not skip_existing:
             logging.info(f"Скачиваем SRC файл: {src_file_path}")
             with open(src_file_path, 'wb') as file:
-                file.write(get_src_page(cf_conn, page_id))
+                src = get_src_page(cf_conn, page_id)
+                # src = unquote(src, 'utf-8')
+                file.write(src)
         else:
             logging.info(f"SRC файл уже существует: {src_file_path}")
 
@@ -143,13 +165,6 @@ def dl_all(cf_conn, page_id, current_directory, skip_existing=False):
         else:
             logging.info(f"STORAGE файл уже существует: {storage_file_path}")
 
-        # Скачиваем прикрепленные файлы
-        attachments = download_attachments_from_page(cf_conn, page_id, path=current_path)
-        if attachments is not None:
-            logging.info(f"Скачали прикреплённые файлы: {attachments} шт.")
-
-        logging.info(f"Страница успешно обработана: {page_id=} {page_title=}")
-
         # Рекурсивно обрабатываем все дочерние объекты
         children = cf_conn.get_page_child_by_type(page_id, 'page')
         for child in children:
@@ -157,8 +172,57 @@ def dl_all(cf_conn, page_id, current_directory, skip_existing=False):
             dl_all(cf_conn, child_id, current_path, skip_existing)
     except UnicodeEncodeError as e:
         logging.error(f"Ошибка UnicodeEncodeError при обработке страницы: {page_id=} {page_title=}, ошибка: {e}")
-    # except FileNotFoundError as e:
-    #     logging.error(f"Ошибка FileNotFoundError при обработке страницы: {page_id=} {page_title=}, ошибка: {e}")
+    except FileNotFoundError as e:
+        logging.error(f"Ошибка FileNotFoundError при обработке страницы: {page_id=} {page_title=}, ошибка: {e}")
+    except OSError as e:
+        logging.error(f"Ошибка OSError при обработке страницы: {page_id=} {page_title=}, ошибка: {e}")
+
+
+def get_all_space(cf_conn, spaceKey="", type="", status="", label="", favourite=None, hasRetentionPolicy=None, expand="", start=0, limit=1000):
+    """
+        spaceKey	        string      a list of space keys
+        type	            string      filter the list of spaces returned by type (global, personal)
+        status	            string      filter the list of spaces returned by status (current, archived)
+        label	            string      filter the list of spaces returned by label
+        favourite	        boolean     filter the list of spaces returned by favourites
+        hasRetentionPolicy	boolean     filter the list of spaces returned by retention policy
+        expand	            string      a comma separated list of properties to expand on the spaces
+        start           	int         the start point of the collection to return
+        limit	            int         Default: 25
+    """
+    url = "rest/api/space"
+    params = {}
+    if spaceKey:
+        params['spaceKey'] = spaceKey
+    if type:
+        params['type'] = type
+    if status:
+        params['status'] = status
+    if label:
+        params['label'] = label
+    if favourite is True:
+        params['favourite'] = favourite
+    if hasRetentionPolicy is True:
+        params['hasRetentionPolicy'] = hasRetentionPolicy
+    if expand:
+        params['expand'] = expand
+    if start:
+        params['start'] = start
+    if limit:
+        params['limit'] = limit
+
+    try:
+        response = cf_conn.get(url, params=params)
+    except HTTPError as e:
+        if e.response.status_code == 404:
+            # Raise ApiError as the documented reason is ambiguous
+            raise ApiError(
+                "There is no space with the given key, "
+                "or the calling user does not have permission to view the space",
+                reason=e,
+            )
+        raise
+    return response
 
 
 def main():
@@ -173,7 +237,30 @@ def main():
         logger.info(f"Создаём локальное хранилище: {SETTINGS.TARGET_DIRECTORY}")
 
     if SETTINGS.CONFLUENCE_SPACES is not None:
-        for space_key in SETTINGS.CONFLUENCE_SPACES:
+
+        # блок ALL_SPACES - если запрос за скачивание ВСЕХ доступных пространств
+        name_all_spaces = SETTINGS.CONFLUENCE_NAME_ALL_SPACES
+        spaces_ids = SETTINGS.CONFLUENCE_SPACES
+        if spaces_ids == name_all_spaces or isinstance(spaces_ids, list) and spaces_ids[0] == name_all_spaces:
+            response = get_all_space(cf, type="global", limit=1000)
+            spaces = response.get("results", [])
+
+            # Проверяем наличие ALL-SPACES файла
+            space_file_path = os.path.join(current_path, f'{clean_folder_name(name_all_spaces)}.json')
+            if not os.path.exists(space_file_path):
+                logging.info(f"Скачиваем ALL-SPACES файл: {space_file_path}")
+                with open(space_file_path, 'w') as file:
+                    json.dump(spaces, file)
+            else:
+                logging.info(f"ALL-SPACES файл уже существует: {space_file_path}")
+
+            spaces_ids = []
+            for space in spaces:
+                space_key = space.get("key", None)
+                spaces_ids.append(space_key)
+        # конец блока ALL_SPACES
+
+        for space_key in spaces_ids:
             if space_key:
                 space = cf.get_space(space_key=space_key)
 
@@ -186,7 +273,11 @@ def main():
                 else:
                     logging.info(f"STORAGE файл уже существует: {space_file_path}")
 
-                space_page_id = space.get("homepage", []).get("id", [])
+                space_homepage = space.get("homepage")
+                if not space_homepage:
+                    logger.error(f'У пространства нет homepage! {space=}')
+                    continue
+                space_page_id = space_homepage.get("id")
                 if space_page_id:
                     dl_all(cf, space_page_id, current_path, skip_existing=True)
                 else:

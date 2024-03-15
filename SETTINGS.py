@@ -5,7 +5,7 @@ import sys
 import os
 import argparse
 
-
+CONFLUENCE_NAME_ALL_SPACES = "__ALL__"
 # LOGGING
 #
 _log_name = "download_confluence"
